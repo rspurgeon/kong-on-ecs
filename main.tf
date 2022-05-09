@@ -32,6 +32,19 @@ resource "aws_service_discovery_private_dns_namespace" "example_domain" {
   vpc  = var.aws_vpc_id
 }
 
+resource "aws_security_group" "default_outbound" {
+    name = "default_outbound"
+    description = "Allows all outbound traffic"
+    vpc_id = var.aws_vpc_id
+
+    egress {
+      from_port        = 0
+      to_port          = 0
+      protocol         = "-1"
+      cidr_blocks      = ["0.0.0.0/0"]
+      ipv6_cidr_blocks = ["::/0"]
+    }
+}
 resource "aws_security_group" "postgres_ingress_everywhere" {
     name = "postgres_ingress_everywhere"
     description = "Allows traffice to 5432 from anywhere"
@@ -99,7 +112,7 @@ resource "aws_cloudwatch_log_group" "kong_database" {
 }
 
 resource "aws_ecs_task_definition" "kong_database" {
-  family = "kong-database"
+  family                    = "kong-database"
   requires_compatibilities  = ["FARGATE"]
   network_mode              = "awsvpc"
   cpu                       = 512
@@ -108,7 +121,7 @@ resource "aws_ecs_task_definition" "kong_database" {
   container_definitions     = jsonencode([
     {
       name      = "pg"
-      image     = "postgres:9.6"
+      image     = var.postgres_image_tag
       essential = true
       portMappings = [
         {
@@ -121,6 +134,12 @@ resource "aws_ecs_task_definition" "kong_database" {
         { name = "POSTGRES_PASSWORD", value = "kong" },
         { name = "POSTGRES_DB",       value = "kong" }
       ]
+      healthcheck = {
+        command = [ "CMD", "pg_isready" ]
+        interval = 10
+        timeout = 5
+        retries = 5
+      }
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -153,7 +172,7 @@ resource "aws_ecs_service" "kong_database" {
   launch_type       = "FARGATE"
 
   network_configuration {
-    subnets           = var.aws_subnet_ids
+    subnets           = [ var.aws_private_subnet_id ]
     security_groups   = [ aws_security_group.postgres_ingress_everywhere.id ]
     assign_public_ip  = true
   }
@@ -161,6 +180,56 @@ resource "aws_ecs_service" "kong_database" {
   service_registries {
     registry_arn = aws_service_discovery_service.kong_database.arn
   }
+}
+
+resource "aws_cloudwatch_log_group" "kong_db_migrations" {
+  name = "/kong/kong-db-migrations"
+}
+
+resource "aws_ecs_task_definition" "kong_db_migrations" {
+  family = "kong-db-migrations"
+  requires_compatibilities  = ["FARGATE"]
+  network_mode              = "awsvpc"
+  cpu                       = 512 
+  memory                    = 1024 
+  execution_role_arn        = aws_iam_role.ecs_tasks_execution_role.arn
+  container_definitions     = jsonencode([
+    {
+      name       = "kong-db-migrations"
+      image      = var.kong_gw_image_tag
+      essential  = true
+      command    = ["kong", "migrations", "bootstrap"]
+      environment  = [
+        { name = "KONG_DATABASE",    value = "postgres" },
+        { name = "KONG_PG_USER",     value = "kong" },
+        { name = "KONG_PG_PASSWORD", value = "kong" },
+        { name = "KONG_PG_HOST",     value = "kong-database.example.com" },
+        { name = "KONG_CASSANDRA_CONTACT_POINTS", value = "kong-database" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group = "${aws_cloudwatch_log_group.kong_db_migrations.name}"
+          awslogs-region = var.aws_region
+          awslogs-stream-prefix = "ecs"
+        }
+      } 
+    }
+  ])
+}
+
+
+resource "null_resource" "kong_db_migrations" {
+  triggers = {
+    service_discovery_arn = aws_service_discovery_service.kong_database.arn
+  }
+
+  provisioner "local-exec" {
+    // quick and dirty sleep to allow db to init before bootstrapping. todo: make this resiliant by integrating db health check somehow
+    command = "sleep 30; aws ecs run-task --cluster ${aws_ecs_cluster.kong.arn} --count 1 --launch-type FARGATE --task-definition ${aws_ecs_task_definition.kong_db_migrations.arn} --network-configuration \"awsvpcConfiguration={subnets=[${var.aws_private_subnet_id}],securityGroups=[${aws_security_group.default_outbound.id}],assignPublicIp=DISABLED}\""
+  }
+
+  depends_on = [ aws_ecs_service.kong_database ]
 }
 
 resource "aws_cloudwatch_log_group" "kong_gateway" {
@@ -174,15 +243,12 @@ resource "aws_ecs_task_definition" "kong_gateway" {
   cpu                       = 1024
   memory                    = 2048 
   execution_role_arn = aws_iam_role.ecs_tasks_execution_role.arn
-      //entrypoint = [] 
-      //command    = [ "/bin/bash", "-c", "/docker-entrypoint.sh", "kong", "migrations", "bootstrap;", "/docker-entrypoint.sh", "kong", "docker-start" ]
-      //command = ["kong", "migrations", "bootstrap"]
   container_definitions     = jsonencode([
     {
       name       = "kong-gateway"
-      image      = "kong:latest"
+      image      = var.kong_gw_image_tag
       essential  = true
-      command = ["kong", "docker-start"]
+      command    = [ "kong", "docker-start" ]
       portMappings = [ 
         {
           containerPort = 8000
@@ -250,7 +316,7 @@ resource "aws_ecs_service" "kong_gateway" {
   launch_type       = "FARGATE"
 
   network_configuration {
-    subnets           = var.aws_subnet_ids
+    subnets           = [ var.aws_public_subnet_id ]
     security_groups   = [ aws_security_group.kong_gw.id ]
     assign_public_ip  = true
   }
@@ -259,5 +325,5 @@ resource "aws_ecs_service" "kong_gateway" {
     registry_arn = aws_service_discovery_service.kong_gateway.arn
   }
 
-  depends_on = [ aws_ecs_service.kong_database ]
+  depends_on = [ null_resource.kong_db_migrations ]
 }
