@@ -13,7 +13,7 @@ variable "aws_public_subnet_id" {
 }
 variable "kong_gw_image_tag" {
   type = string
-  default = "kong:2.8.1-ubuntu"
+  default = "kong/kong-gateway:2.8"
 }
 variable "postgres_image_tag" {
   type = string

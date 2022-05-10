@@ -83,6 +83,18 @@ resource "aws_security_group" "kong_gw" {
       cidr_blocks      = ["0.0.0.0/0"]
     }
     ingress {
+      from_port        = 8002
+      to_port          = 8002
+      protocol         = "tcp"
+      cidr_blocks      = ["0.0.0.0/0"]
+    }
+    ingress {
+      from_port        = 8003
+      to_port          = 8003
+      protocol         = "tcp"
+      cidr_blocks      = ["0.0.0.0/0"]
+    }
+    ingress {
       from_port        = 8443
       to_port          = 8443
       protocol         = "tcp"
@@ -259,6 +271,10 @@ resource "aws_ecs_task_definition" "kong_gateway" {
           hostPort      = 8001
         },
         {
+          containerPort = 8003
+          hostPort      = 8003
+        },
+        {
           containerPort = 8443
           hostPort      = 8443
         },
@@ -276,8 +292,10 @@ resource "aws_ecs_task_definition" "kong_gateway" {
         { name = "KONG_ADMIN_ACCESS_LOG", value = "/dev/stdout" },
         { name = "KONG_PROXY_ERROR_LOG",  value = "/dev/stderr" },
         { name = "KONG_ADMIN_ERROR_LOG",  value = "/dev/stderr" },
+        { name = "KONG_PORTAL",           value = "on" },
+        { name = "KONG_PORTAL_GUI_HOST",  value = "localhost:8083" },
         { name = "KONG_ADMIN_LISTEN",     value = "0.0.0.0:8001, 0.0.0.0:8444 ssl" },
-        { name = "KONG_CASSANDRA_CONTACT_POINTS", value = "kong-database" }
+        { name = "KONG_CASSANDRA_CONTACT_POINTS", value = "kong-database" },
       ]
       healthcheck = {
         command = [ "CMD", "kong", "health" ]
