@@ -9,3 +9,9 @@ Add a `terraform.tfvars` file with values for the vpc, subnet, etc...
 if all looks good
 
 `terraform apply plan`
+
+To create a new service (Httpie)
+`http $KONG_GW_IP:8001/services name=example-service url=http://mockbin.org`
+
+To create a new route:
+`$KONG_GW_IP:8001/services/example-service/routes "hosts[]=example.com"`
